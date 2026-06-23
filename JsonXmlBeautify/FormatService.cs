@@ -63,6 +63,7 @@ namespace JsonXmlBeautify
 
         private static FormatResult ValidateJson(string input)
         {
+            input = NormalizeJson(input);
             try
             {
                 using var _ = JsonDocument.Parse(input);
@@ -76,6 +77,7 @@ namespace JsonXmlBeautify
 
         private static FormatResult WriteJson(string input, bool indented)
         {
+            input = NormalizeJson(input);
             try
             {
                 using var doc = JsonDocument.Parse(input);
@@ -94,6 +96,53 @@ namespace JsonXmlBeautify
 
         private static string JsonError(JsonException ex) =>
             $"✗ Invalid JSON.\r\n\r\n{ex.Message}";
+
+        /// <summary>
+        /// Logs frequently carry JSON that was embedded inside another string, so
+        /// every quote arrives escaped (e.g. {\"key\":\"value\"}) and a normal parse
+        /// fails. This unescapes one level by reading the input as a JSON string
+        /// literal, turning \" back into ". The original input is returned unchanged
+        /// when it is already valid JSON or is not recognizably escaped.
+        /// </summary>
+        private static string NormalizeJson(string input)
+        {
+            // Fast path: already well-formed JSON, nothing to do.
+            try { using var _ = JsonDocument.Parse(input); return input; }
+            catch (JsonException) { }
+
+            string trimmed = input.Trim();
+
+            // Only escaped quotes are worth unescaping; bail otherwise.
+            if (!trimmed.Contains("\\\"")) return input;
+
+            // Drop the surrounding quotes when the whole thing was copied as a
+            // quoted string ("{\"key\":\"value\"}").
+            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+                trimmed = trimmed[1..^1];
+
+            // Wrap as a JSON string literal so the parser does the unescaping.
+            // Raw control characters aren't legal inside a literal, so escape the
+            // common ones first; their escaped forms unescape back afterwards.
+            string literal = "\"" + trimmed
+                .Replace("\r", "\\r")
+                .Replace("\n", "\\n")
+                .Replace("\t", "\\t") + "\"";
+
+            try
+            {
+                using var doc = JsonDocument.Parse(literal);
+                if (doc.RootElement.ValueKind == JsonValueKind.String)
+                {
+                    string unescaped = doc.RootElement.GetString() ?? input;
+                    // Accept only if the unescaped text is itself valid JSON.
+                    using var _ = JsonDocument.Parse(unescaped);
+                    return unescaped;
+                }
+            }
+            catch (JsonException) { }
+
+            return input;
+        }
 
         // ---- XML --------------------------------------------------------
 
@@ -143,6 +192,7 @@ namespace JsonXmlBeautify
 
         private static FormatResult ConvertJsonToXml(string input)
         {
+            input = NormalizeJson(input);
             try
             {
                 var token = Newtonsoft.Json.Linq.JToken.Parse(input);
